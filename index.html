@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Puppet Patrol — Monster Meadow</title>
+<style>
+  :root{
+    --pink:#ff8fb3; --teal:#39c6a5; --red:#ff5d6c; --cream:#fff6e8; --ink:#3a2e3f;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;overflow:hidden;background:#2b2436;font-family:'Segoe UI',system-ui,sans-serif}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+  #stage{position:relative}
+  canvas{display:block;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.55);touch-action:none;cursor:pointer}
+  .overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    text-align:center;color:var(--cream);background:rgba(38,28,48,.86);border-radius:14px;backdrop-filter:blur(3px);z-index:5}
+  .hidden{display:none!important}
+  h1{font-size:44px;letter-spacing:1px;color:var(--pink);text-shadow:0 4px 0 rgba(0,0,0,.35);margin-bottom:2px}
+  h1 span{color:var(--teal)}
+  .sub{font-size:15px;opacity:.85;margin-bottom:18px}
+  .howto{background:rgba(255,255,255,.07);border-radius:14px;padding:14px 20px;font-size:14px;line-height:1.75;max-width:360px;margin-bottom:20px;text-align:left}
+  .howto b{color:#ffd48a}
+  .g{color:#7dffc9;font-weight:700}.r{color:#ff8d99;font-weight:700}
+  button.big{font-family:inherit;font-size:20px;font-weight:800;letter-spacing:1px;color:#fff;background:linear-gradient(180deg,#ff8fb3,#f2547f);
+    border:none;border-radius:50px;padding:14px 52px;cursor:pointer;box-shadow:0 6px 0 #b23558, 0 12px 24px rgba(0,0,0,.4);transition:transform .08s}
+  button.big:active{transform:translateY(4px);box-shadow:0 2px 0 #b23558}
+  #banner{position:absolute;left:0;right:0;top:34%;text-align:center;z-index:4;pointer-events:none;opacity:0}
+  #banner.show{animation:bpop 1.7s ease forwards}
+  #banner h2{font-size:52px;color:#fff;text-shadow:0 0 24px rgba(255,143,179,.9),0 5px 0 rgba(0,0,0,.35)}
+  #banner p{color:#ffd48a;font-size:16px;font-weight:700;text-shadow:0 2px 4px rgba(0,0,0,.5)}
+  @keyframes bpop{0%{opacity:0;transform:scale(.6)}14%{opacity:1;transform:scale(1.06)}22%{transform:scale(1)}78%{opacity:1}100%{opacity:0;transform:scale(1.04)}}
+  .stat{font-size:17px;margin:4px 0}
+  .stat b{color:#ffd48a}
+  #uibtns{position:absolute;top:10px;right:10px;display:flex;gap:8px;z-index:6}
+  #uibtns button{width:38px;height:38px;border-radius:12px;border:none;background:rgba(0,0,0,.35);color:#fff;font-size:17px;cursor:pointer}
+  #uibtns button:hover{background:rgba(0,0,0,.55)}
+</style>
+</head>
+<body>
+<div id="wrap"><div id="stage">
+  <canvas id="game"></canvas>
+  <div id="uibtns">
+    <button id="muteBtn" title="Sound">🔊</button>
+    <button id="pauseBtn" title="Pause">⏸</button>
+  </div>
+  <div id="banner"><h2 id="bTitle">LEVEL 1</h2><p id="bSub"></p></div>
+
+  <div id="menu" class="overlay">
+    <h1>PUPPET <span>PATROL</span></h1>
+    <div class="sub">Monster Meadow needs its fluffiest defenders</div>
+    <div class="howto">
+      🧸 <b>Drag / tap</b> (or ←→ keys) to move your squad between lanes.<br>
+      🔫 Puppets <b>shoot automatically</b> — straight up their lane.<br>
+      <span class="g">GREEN gates</span> grow as you shoot them. Walk through for buffs!<br>
+      <span class="r">RED gates</span> start negative (like <b>−30</b>). Shoot them positive
+      or they curse your whole army — <b>no matter where you hide</b>.<br>
+      👹 Brutes &amp; bosses are beefy: stack puppets &amp; power or perish.
+    </div>
+    <button class="big" id="startBtn">START</button>
+  </div>
+
+  <div id="over" class="overlay hidden">
+    <h1 style="color:#ff8d99">SQUAD DOWN!</h1>
+    <div class="sub">The meadow falls silent…</div>
+    <div class="stat">Reached <b id="oLvl">Level 1</b></div>
+    <div class="stat">Score <b id="oScore">0</b></div>
+    <div class="stat" style="margin-bottom:22px">Best <b id="oBest">0</b></div>
+    <button class="big" id="retryBtn">TRY AGAIN</button>
+  </div>
+</div></div>
+
+<script>
+"use strict";
+/* ============ PUPPET PATROL — Monster Meadow ============
+   2-lane auto-shooter: buff gates, curse (nerf) gates,
+   tiered monsters, end-of-level bosses, scaling difficulty. */
+
+const W=480, H=760;
+const cv=document.getElementById('game'), ctx=cv.getContext('2d');
+const DPR=Math.min(2,window.devicePixelRatio||1);
+cv.width=W*DPR; cv.height=H*DPR; ctx.scale(DPR,DPR);
+function fit(){
+  const s=Math.min(window.innerWidth/W,(window.innerHeight)/H)*0.985;
+  cv.style.width=(W*s)+'px'; cv.style.height=(H*s)+'px';
+}
+fit(); addEventListener('resize',fit);
+
+const LANE_X=[W*0.27,W*0.73], LANE_W=W*0.44, ARMY_Y=H-108;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const pick=a=>a[Math.floor(Math.random()*a.length)];
+
+/* ---------- audio ---------- */
+let AC=null, muted=false, lastShotSnd=0;
+function ac(){ if(!AC) AC=new (window.AudioContext||window.webkitAudioContext)(); return AC; }
+function tone(f0,f1,dur,type,vol){
+  if(muted) return;
+  try{
+    const a=ac(), o=a.createOscillator(), g=a.createGain(), t=a.currentTime;
+    o.type=type; o.frequency.setValueAtTime(f0,t); o.frequency.exponentialRampToValueAtTime(Math.max(20,f1),t+dur);
+    g.gain.setValueAtTime(vol,t); g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+    o.connect(g).connect(a.destination); o.start(t); o.stop(t+dur+0.02);
+  }catch(e){}
+}
+const snd={
+  shoot(){ const n=performance.now(); if(n-lastShotSnd<90) return; lastShotSnd=n; tone(760,420,.05,'triangle',.025); },
+  pop(){ tone(320,70,.14,'square',.06); },
+  gate(v){ tone(300+clamp(v,-30,30)*6,500,.05,'sine',.04); },
+  buff(){ tone(420,880,.22,'triangle',.12); setTimeout(()=>tone(560,1100,.2,'triangle',.1),90); },
+  nerf(){ tone(220,70,.4,'sawtooth',.12); },
+  ouch(){ tone(140,60,.18,'square',.1); },
+  boss(){ tone(90,55,.5,'sawtooth',.16); setTimeout(()=>tone(70,45,.5,'sawtooth',.14),180); },
+  clear(){ [523,659,784,1046].forEach((f,i)=>setTimeout(()=>tone(f,f,.16,'triangle',.11),i*110)); },
+  over(){ [400,320,240,150].forEach((f,i)=>setTimeout(()=>tone(f,f*.8,.25,'square',.1),i*160)); }
+};
+
+/* ---------- state ---------- */
+const S={
+  screen:'menu', paused:false, t:0, shake:0,
+  level:1, score:0, best:0, phase:'wave', phaseT:0, clearT:0,
+  spawnT:0, gateT:0, boss:null, hintT:0
+};
+const army={lane:0, x:LANE_X[0], count:10, power:2, rate:1.5, fireT:0, hurtT:0};
+let bullets=[], monsters=[], gates=[], parts=[], floaters=[];
+
+function lvl(){ return S.level; }
+function hpMul(){ const l=lvl()-1; return 1+0.4*l+0.06*l*l; }
+function spdMul(){ return Math.min(1.6, 1+0.05*(lvl()-1)); }
+function dps(){ return army.count*army.power*army.rate; }
+
+/* ---------- monsters ---------- */
+const MTYPES={
+  normie:{hp:14, spd:46, dmg:3, r:20, score:10, col:'#8bd46e', col2:'#5fae44'},
+  runner:{hp:7,  spd:88, dmg:2, r:16, score:15, col:'#c78bff', col2:'#9a5fe0'},
+  brute: {hp:120,spd:29, dmg:12,r:31, score:60, col:'#ff8b6b', col2:'#d95f3f'},
+  boss:  {hp:380,spd:16, dmg:0, r:46, score:300,col:'#7a6bff', col2:'#4f41c9'}
+};
+function spawnMonster(type,lane){
+  const b=MTYPES[type];
+  let hp=b.hp*hpMul();
+  if(type==='boss') hp*= (1+0.3*(lvl()-1));
+  monsters.push({
+    type, lane, x:LANE_X[lane]+rnd(-LANE_W*0.22,LANE_W*0.22),
+    y:-60, hp, maxHp:hp, spd:b.spd*spdMul()*rnd(.9,1.1),
+    dmg: type==='boss' ? (28+9*lvl()) : b.dmg,
+    r:b.r, wob:Math.random()*7, hitT:0
+  });
+}
+
+/* ---------- gates ---------- */
+const GTYPES={
+  minion:{label:'PUPPETS', fmt:v=>(v>=0?'+':'')+Math.round(v)},
+  power: {label:'POWER',   fmt:v=>(v>=0?'+':'')+(Math.round(v*10)/10)},
+  rate:  {label:'SPEED',   fmt:v=>(v>=0?'+':'')+Math.round(v*100)+'%'}
+};
+function makeGatePair(){
+  const buffLane=Math.random()<.5?0:1, l=lvl();
+  const bt=pick(['minion','power','rate']), nt=pick(['minion','power','rate']);
+  const buffDef={
+    minion:{v:2,      g:0.25,  max:5+3*l},
+    power: {v:0.5,    g:0.055, max:1.4+0.6*l},
+    rate:  {v:0.08,   g:0.011, max:0.32+0.07*l}
+  }[bt];
+  const nerfDef={
+    minion:{v:-(16+7*l),        g:0.5,   max:4+2*l},
+    power: {v:-(1.1+0.5*l),     g:0.038, max:0.9+0.4*l},
+    rate:  {v:-(0.45+0.12*l),   g:0.014, max:0.28+0.05*l}
+  }[nt];
+  gates.push({lane:buffLane,   y:-40, type:bt, kind:'buff', value:buffDef.v, gain:buffDef.g, max:buffDef.max, flash:0, wasNeg:false});
+  gates.push({lane:1-buffLane, y:-46, type:nt, kind:'nerf', value:nerfDef.v, gain:nerfDef.g, max:nerfDef.max, flash:0, wasNeg:true});
+}
+function applyGate(g){
+  const v=g.value, neg=v<0;
+  if(g.type==='minion') army.count=clamp(Math.round(army.count+v), 1, 999);
+  if(g.type==='power')  army.power=clamp(Math.round((army.power+v)*10)/10, 0.8, 60);
+  if(g.type==='rate')   army.rate =clamp(Math.round((army.rate+v)*100)/100, 0.7, 6);
+  const txt=GTYPES[g.type].fmt(v)+' '+GTYPES[g.type].label+(neg?'  😖':'  ✨');
+  floaters.push({x:army.x,y:ARMY_Y-70,t:0,txt,col:neg?'#ff6d7d':'#7dffc9',big:true});
+  if(neg){ snd.nerf(); S.shake=Math.max(S.shake,7); army.hurtT=.5; }
+  else { snd.buff(); burst(army.x,ARMY_Y-40,'#7dffc9',16); }
+}
+
+/* ---------- fx ---------- */
+function burst(x,y,col,n){
+  for(let i=0;i<n;i++){ const a=rnd(0,6.283),s=rnd(40,190);
+    parts.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,t:0,life:rnd(.3,.65),col,r:rnd(2,5)});}
+}
+function floatTxt(x,y,txt,col){ floaters.push({x,y,t:0,txt,col,big:false}); }
+
+/* ---------- level flow ---------- */
+function startLevel(n){
+  S.level=n; S.phase='wave'; S.phaseT=0; S.spawnT=1.2; S.gateT=n===1?2.2:3.5;
+  S.boss=null; monsters=[]; gates=[]; bullets=[];
+  showBanner('LEVEL '+n, n===1?'Shoot the RED gate before it reaches you!':pick([
+    'The monsters grow bolder…','Fluff for the fluff god!','They smell your felt.',
+    'Hold the meadow!','Even cuter. Even meaner.']));
+}
+function showBanner(t,s){
+  const b=document.getElementById('banner');
+  document.getElementById('bTitle').textContent=t;
+  document.getElementById('bSub').textContent=s;
+  b.classList.remove('show'); void b.offsetWidth; b.classList.add('show');
+}
+function newGame(){
+  S.score=0; S.hintT=0;
+  army.lane=0; army.x=LANE_X[0]; army.count=10; army.power=2; army.rate=1.5; army.fireT=0;
+  monsters=[]; bullets=[]; gates=[]; parts=[]; floaters=[];
+  S.screen='play'; S.paused=false;
+  startLevel(1);
+}
+function gameOver(){
+  S.screen='over'; snd.over();
+  S.best=Math.max(S.best,S.score);
+  document.getElementById('oLvl').textContent='Level '+S.level;
+  document.getElementById('oScore').textContent=S.score;
+  document.getElementById('oBest').textContent=S.best;
+  document.getElementById('over').classList.remove('hidden');
+}
+
+/* ---------- update ---------- */
+function update(dt){
+  S.t+=dt; S.hintT+=dt;
+  S.shake=Math.max(0,S.shake-dt*22);
+  army.hurtT=Math.max(0,army.hurtT-dt);
+  army.x+= (LANE_X[army.lane]-army.x)*Math.min(1,dt*10);
+
+  /* phases */
+  S.phaseT+=dt;
+  const waveLen=22+3*lvl();
+  if(S.phase==='wave' && S.phaseT>=waveLen){
+    S.phase='boss'; S.phaseT=0; snd.boss();
+    spawnMonster('boss', Math.random()<.5?0:1);
+    S.boss=monsters[monsters.length-1];
+    floatTxt(W/2,H*0.3,'⚠ BOSS ⚠','#ffd48a');
+  }
+  if(S.phase==='clear'){
+    S.clearT-=dt;
+    if(S.clearT<=0) startLevel(S.level+1);
+  }
+
+  /* spawns */
+  if(S.phase!=='clear'){
+    S.spawnT-=dt;
+    if(S.spawnT<=0){
+      const base=Math.max(.5, 1.55-0.1*lvl());
+      S.spawnT=base*rnd(.75,1.3)*(S.phase==='boss'?2.3:1);
+      const bruteP=Math.min(.22,.02+.035*lvl());
+      const roll=Math.random();
+      spawnMonster(roll<bruteP?'brute':roll<bruteP+.28?'runner':'normie', Math.random()<.5?0:1);
+      if(lvl()>=4 && Math.random()<.3) spawnMonster('runner',Math.random()<.5?0:1);
+    }
+    S.gateT-=dt;
+    if(S.gateT<=0){ S.gateT=Math.max(6,9-lvl()*.25)*rnd(.85,1.15); makeGatePair(); }
+  }
+
+  /* firing */
+  army.fireT-=dt;
+  if(army.fireT<=0){
+    army.fireT=1/army.rate;
+    const nb=Math.min(army.count,14), dmg=army.count*army.power/nb;
+    for(let i=0;i<nb;i++){
+      bullets.push({x:army.x+rnd(-LANE_W*0.28,LANE_W*0.28), y:ARMY_Y-30-rnd(0,26),
+        vy:-460, dmg, lane:army.lane});
+    }
+    snd.shoot();
+  }
+
+  /* gates */
+  for(const g of gates){
+    g.y+=32*dt; g.flash=Math.max(0,g.flash-dt*4);
+    if(g.y>=ARMY_Y-46 && !g.done){
+      g.done=true;
+      if(g.kind==='nerf' && g.value<0) applyGate(g);            // curse hits everywhere
+      else if(g.lane===army.lane) applyGate(g);                  // buffs need contact
+      else floatTxt(LANE_X[g.lane],ARMY_Y-70,'missed…','#bbb');
+    }
+  }
+  gates=gates.filter(g=>!g.done);
+
+  /* bullets */
+  const hitMul=0.7+0.3*Math.sqrt(army.power);
+  for(const b of bullets){
+    b.y+=b.vy*dt;
+    // gates absorb shots
+    for(const g of gates){
+      if(g.lane===b.lane && Math.abs(b.y-g.y)<20){
+        const was=g.value;
+        g.value=Math.min(g.max, g.value+g.gain*hitMul);
+        g.flash=1; b.dead=true;
+        if(was<0&&g.value>=0){ S.score+=25; snd.gate(20); burst(LANE_X[g.lane],g.y,'#7dffc9',12);
+          floatTxt(LANE_X[g.lane],g.y,'NEUTRALIZED! +25','#7dffc9'); }
+        break;
+      }
+    }
+    if(b.dead) continue;
+    for(const m of monsters){
+      if(m.lane===b.lane && Math.abs(b.x-m.x)<m.r+6 && Math.abs(b.y-m.y)<m.r+8){
+        m.hp-=b.dmg; m.hitT=.1; b.dead=true;
+        parts.push({x:b.x,y:b.y,vx:rnd(-40,40),vy:rnd(-90,-30),t:0,life:.25,col:'#fff',r:2.5});
+        break;
+      }
+    }
+  }
+  bullets=bullets.filter(b=>!b.dead && b.y>-30);
+
+  /* monsters */
+  for(const m of monsters){
+    m.y+=m.spd*dt; m.wob+=dt*(m.type==='runner'?14:7); m.hitT=Math.max(0,m.hitT-dt);
+    if(m.hp<=0){
+      m.dead=true; S.score+=MTYPES[m.type].score;
+      burst(m.x,m.y,MTYPES[m.type].col,m.type==='boss'?46:12); snd.pop();
+      floatTxt(m.x,m.y,'+'+MTYPES[m.type].score,'#ffd48a');
+      if(m.type==='boss'){ S.score+=200*lvl(); levelCleared(true); }
+      continue;
+    }
+    if(m.y>=ARMY_Y-24){
+      m.dead=true;
+      const full=m.lane===army.lane, dmg=full?m.dmg:Math.ceil(m.dmg/2);
+      army.count-=dmg; army.hurtT=.5; S.shake=Math.max(S.shake, m.type==='boss'?14:6);
+      snd.ouch(); burst(m.x,ARMY_Y-20,'#ff6d7d',14);
+      floatTxt(army.x,ARMY_Y-80,'-'+dmg+' puppets'+(full?'!':' (grazed)'),'#ff6d7d');
+      if(m.type==='boss'){ if(army.count>0) levelCleared(false); }
+      if(army.count<=0){ gameOver(); return; }
+    }
+  }
+  monsters=monsters.filter(m=>!m.dead);
+
+  /* fx */
+  for(const p of parts){ p.t+=dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=300*dt; }
+  parts=parts.filter(p=>p.t<p.life);
+  for(const f of floaters){ f.t+=dt; f.y-=28*dt; }
+  floaters=floaters.filter(f=>f.t<1.4);
+}
+function levelCleared(killed){
+  if(S.phase==='clear') return;
+  S.phase='clear'; S.clearT=2.1; S.boss=null; snd.clear();
+  showBanner('LEVEL '+S.level+' CLEAR!', killed?'+'+(200*lvl())+' boss bonus!':'You survived the stampede!');
+}
+
+/* ---------- drawing ---------- */
+function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+
+function drawBG(){
+  const sky=ctx.createLinearGradient(0,0,0,H);
+  sky.addColorStop(0,'#8fd0a0'); sky.addColorStop(.6,'#a8dc9c'); sky.addColorStop(1,'#c2e6a2');
+  ctx.fillStyle=sky; ctx.fillRect(0,0,W,H);
+  // lanes
+  for(let i=0;i<2;i++){
+    ctx.fillStyle='rgba(222,196,150,.75)';
+    rr(LANE_X[i]-LANE_W/2,-20,LANE_W,H+40,18); ctx.fill();
+    ctx.fillStyle='rgba(255,255,255,.22)';
+    const off=(S.t*32)%56;
+    for(let y=-56+off;y<H;y+=56){ rr(LANE_X[i]-3,y,6,26,3); ctx.fill(); }
+  }
+  // flowers between lanes
+  ctx.fillStyle='rgba(255,255,255,.5)';
+  for(let k=0;k<7;k++){ const y=(k*137+40)%H;
+    ctx.beginPath(); ctx.arc(W/2,(y+S.t*10)%H,3,0,7); ctx.fill(); }
+  // home strip
+  ctx.fillStyle='rgba(70,120,80,.35)'; ctx.fillRect(0,ARMY_Y+42,W,H);
+}
+
+function drawPuppet(x,y,sc,i){
+  const bob=Math.sin(S.t*6+i*1.7)*2*sc;
+  const cols=['#ff9db8','#ffd48a','#96e6c8','#a9bcff','#e2a9ff','#ffb37a'];
+  const c=cols[i%cols.length];
+  ctx.save(); ctx.translate(x,y+bob); ctx.scale(sc,sc);
+  if(army.hurtT>0 && Math.floor(S.t*20)%2===0) ctx.globalAlpha=.5;
+  // body
+  ctx.fillStyle=c; rr(-8,-2,16,14,6); ctx.fill();
+  // blaster
+  ctx.fillStyle='#6b6b7d'; rr(-2.5,-16,5,9,2); ctx.fill();
+  ctx.fillStyle='#8f8fa5'; rr(-3.5,-18,7,4,2); ctx.fill();
+  // head
+  ctx.fillStyle=c; ctx.beginPath(); ctx.arc(0,-8,9,0,7); ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,.18)'; ctx.lineWidth=1.4; ctx.stroke();
+  // yarn tuft
+  ctx.strokeStyle=c; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(0,-17); ctx.quadraticCurveTo(3,-21,1,-22); ctx.stroke();
+  // button eyes
+  ctx.fillStyle='#332b38';
+  ctx.beginPath(); ctx.arc(-3.4,-9,1.9,0,7); ctx.arc(3.4,-9,1.9,0,7); ctx.fill();
+  ctx.fillStyle='#fff';
+  ctx.beginPath(); ctx.arc(-2.8,-9.6,.7,0,7); ctx.arc(4,-9.6,.7,0,7); ctx.fill();
+  // cheeks + smile
+  ctx.fillStyle='rgba(255,120,140,.5)';
+  ctx.beginPath(); ctx.arc(-5.5,-5.5,1.6,0,7); ctx.arc(5.5,-5.5,1.6,0,7); ctx.fill();
+  ctx.strokeStyle='#5a3a4a'; ctx.lineWidth=1.1;
+  ctx.beginPath(); ctx.arc(0,-6.5,2.6,.35,2.8); ctx.stroke();
+  ctx.restore();
+}
+
+function drawArmy(){
+  const vis=Math.min(army.count,25), cols=5;
+  for(let i=vis-1;i>=0;i--){
+    const r=Math.floor(i/cols), c=i%cols;
+    const rowN=Math.min(cols,vis-r*cols);
+    const x=army.x+(c-(rowN-1)/2)*24, y=ARMY_Y+r*21;
+    drawPuppet(x,y,1,i);
+  }
+  if(army.count>25){
+    ctx.fillStyle='rgba(0,0,0,.45)'; rr(army.x-26,ARMY_Y+92,52,20,10); ctx.fill();
+    ctx.fillStyle='#fff'; ctx.font='bold 13px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('×'+army.count,army.x,ARMY_Y+106);
+  }
+}
+
+function drawMonster(m){
+  const b=MTYPES[m.type], wob=Math.sin(m.wob)*3, sq=1+Math.sin(m.wob*2)*.05;
+  ctx.save(); ctx.translate(m.x+wob*.4,m.y); ctx.scale(sq,2-sq);
+  const col=m.hitT>0?'#ffffff':b.col;
+  // legs
+  ctx.fillStyle=b.col2;
+  const lp=Math.sin(m.wob*2)*4;
+  ctx.beginPath(); ctx.ellipse(-m.r*.45,m.r*.75+lp*.3,m.r*.24,m.r*.3,0,0,7); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(m.r*.45,m.r*.75-lp*.3,m.r*.24,m.r*.3,0,0,7); ctx.fill();
+  // body
+  ctx.fillStyle=col;
+  ctx.beginPath(); ctx.ellipse(0,0,m.r,m.r*.92,0,0,7); ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,.2)'; ctx.lineWidth=2; ctx.stroke();
+  // horns / spikes
+  ctx.fillStyle=b.col2;
+  const hn=m.type==='boss'?5:m.type==='brute'?3:2;
+  for(let i=0;i<hn;i++){
+    const a=-Math.PI/2+(i-(hn-1)/2)*.5;
+    const hx=Math.cos(a)*m.r*.9, hy=Math.sin(a)*m.r*.85;
+    ctx.beginPath(); ctx.moveTo(hx-5,hy+3); ctx.lineTo(hx+Math.cos(a)*11,hy+Math.sin(a)*11);
+    ctx.lineTo(hx+5,hy+3); ctx.closePath(); ctx.fill();
+  }
+  // googly eyes
+  const eyes=m.type==='runner'?1:2, er=m.type==='boss'?10:6.5;
+  for(let i=0;i<eyes;i++){
+    const ex=eyes===1?0:(i===0?-1:1)*m.r*.38;
+    ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(ex,-m.r*.25,er,0,7); ctx.fill();
+    ctx.fillStyle='#2b2233';
+    ctx.beginPath(); ctx.arc(ex+Math.sin(m.wob)*2,-m.r*.25+2,er*.45,0,7); ctx.fill();
+  }
+  if(m.type==='brute'||m.type==='boss'){ // angry brows
+    ctx.strokeStyle='#3a2530'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(-m.r*.6,-m.r*.55); ctx.lineTo(-m.r*.15,-m.r*.4);
+    ctx.moveTo(m.r*.6,-m.r*.55); ctx.lineTo(m.r*.15,-m.r*.4); ctx.stroke();
+  }
+  // mouth + teeth
+  ctx.fillStyle='#3a1f2d';
+  ctx.beginPath(); ctx.ellipse(0,m.r*.35,m.r*.42,m.r*.22,0,0,7); ctx.fill();
+  ctx.fillStyle='#fff';
+  const tn=m.type==='boss'?5:3;
+  for(let i=0;i<tn;i++){
+    const tx=(i-(tn-1)/2)*m.r*.22;
+    ctx.beginPath(); ctx.moveTo(tx-3,m.r*.22); ctx.lineTo(tx,m.r*.4); ctx.lineTo(tx+3,m.r*.22);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+  // hp bar
+  if(m.hp<m.maxHp && m.type!=='boss'){
+    const w=m.r*1.8;
+    ctx.fillStyle='rgba(0,0,0,.4)'; rr(m.x-w/2,m.y-m.r-14,w,5,2.5); ctx.fill();
+    ctx.fillStyle='#7dffc9'; rr(m.x-w/2,m.y-m.r-14,w*clamp(m.hp/m.maxHp,0,1),5,2.5); ctx.fill();
+  }
+}
+
+function drawGate(g){
+  const neg=g.value<0, x=LANE_X[g.lane]-LANE_W/2+6, w=LANE_W-12;
+  const base=neg?'255,80,100':(g.kind==='nerf'?'120,220,160':'60,200,170');
+  ctx.save();
+  ctx.fillStyle=`rgba(${base},${.28+g.flash*.25})`;
+  ctx.strokeStyle=`rgba(${base},.9)`; ctx.lineWidth=2.5;
+  rr(x,g.y-20,w,40,12); ctx.fill(); ctx.stroke();
+  // shimmer
+  ctx.fillStyle='rgba(255,255,255,.18)';
+  const sh=((S.t*60)%w);
+  ctx.save(); rr(x,g.y-20,w,40,12); ctx.clip();
+  ctx.fillRect(x+sh-14,g.y-20,14,40); ctx.restore();
+  ctx.textAlign='center';
+  ctx.font='900 21px sans-serif';
+  ctx.fillStyle=neg?'#ffdfe3':'#eafff6';
+  ctx.shadowColor='rgba(0,0,0,.5)'; ctx.shadowBlur=4;
+  ctx.fillText(GTYPES[g.type].fmt(g.value)+' '+GTYPES[g.type].label, LANE_X[g.lane], g.y+7);
+  ctx.shadowBlur=0;
+  if(neg){
+    ctx.font='700 11px sans-serif'; ctx.fillStyle='rgba(255,255,255,.85)';
+    ctx.fillText('SHOOT ME OR ELSE', LANE_X[g.lane], g.y-26);
+  }
+  ctx.restore();
+}
+
+function drawHUD(){
+  ctx.textAlign='left';
+  // top plate
+  ctx.fillStyle='rgba(30,22,40,.55)'; rr(10,10,180,58,12); ctx.fill();
+  ctx.fillStyle='#ffd48a'; ctx.font='800 17px sans-serif';
+  ctx.fillText('LEVEL '+S.level, 22, 33);
+  ctx.fillStyle='#fff'; ctx.font='700 14px sans-serif';
+  ctx.fillText('SCORE '+S.score, 22, 56);
+  // stats
+  ctx.fillStyle='rgba(30,22,40,.55)'; rr(10,H-46,W-20,36,12); ctx.fill();
+  ctx.font='700 14px sans-serif'; ctx.fillStyle='#fff';
+  ctx.fillText('🧸 '+army.count, 26, H-22);
+  ctx.fillText('⚡ '+ (Math.round(army.power*10)/10), 116, H-22);
+  ctx.fillText('🔥 '+ (Math.round(army.rate*100)/100)+'/s', 196, H-22);
+  ctx.fillStyle='#ffd48a';
+  ctx.fillText('DPS '+Math.round(dps()), W-110, H-22);
+  // boss bar
+  if(S.boss && !S.boss.dead && S.boss.hp>0){
+    const w=W-160;
+    ctx.fillStyle='rgba(0,0,0,.5)'; rr(80,78,w,16,8); ctx.fill();
+    ctx.fillStyle='#a06bff'; rr(80,78,w*clamp(S.boss.hp/S.boss.maxHp,0,1),16,8); ctx.fill();
+    ctx.textAlign='center'; ctx.fillStyle='#fff'; ctx.font='800 11px sans-serif';
+    ctx.fillText('👑 BIG SNUGGLETH THE DEVOURER', W/2, 90);
+  }
+  // hint
+  if(S.level===1 && S.hintT<12 && S.screen==='play'){
+    ctx.textAlign='center'; ctx.fillStyle='rgba(255,255,255,'+(0.75+Math.sin(S.t*4)*.25)+')';
+    ctx.font='700 14px sans-serif';
+    ctx.fillText('Drag or tap a lane to move  •  RED gates curse you unless shot positive!', W/2, H-64);
+  }
+  if(S.paused){
+    ctx.fillStyle='rgba(20,14,28,.6)'; ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center'; ctx.fillStyle='#fff'; ctx.font='900 40px sans-serif';
+    ctx.fillText('PAUSED', W/2, H/2);
+  }
+}
+
+function draw(){
+  ctx.save();
+  if(S.shake>0) ctx.translate(rnd(-S.shake,S.shake),rnd(-S.shake,S.shake));
+  drawBG();
+  for(const g of gates) drawGate(g);
+  // bullets
+  for(const b of bullets){
+    ctx.fillStyle='#fff2b8';
+    ctx.beginPath(); ctx.ellipse(b.x,b.y,3,7,0,0,7); ctx.fill();
+    ctx.fillStyle='rgba(255,210,120,.5)';
+    ctx.beginPath(); ctx.ellipse(b.x,b.y+9,2,6,0,0,7); ctx.fill();
+  }
+  monsters.slice().sort((a,b)=>a.y-b.y).forEach(drawMonster);
+  drawArmy();
+  for(const p of parts){
+    ctx.globalAlpha=1-p.t/p.life; ctx.fillStyle=p.col;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,7); ctx.fill(); ctx.globalAlpha=1;
+  }
+  for(const f of floaters){
+    ctx.globalAlpha=clamp(1.4-f.t,0,1); ctx.textAlign='center';
+    ctx.font=(f.big?'900 22px':'800 15px')+' sans-serif';
+    ctx.strokeStyle='rgba(0,0,0,.6)'; ctx.lineWidth=3;
+    ctx.strokeText(f.txt,f.x,f.y); ctx.fillStyle=f.col; ctx.fillText(f.txt,f.x,f.y);
+    ctx.globalAlpha=1;
+  }
+  drawHUD();
+  ctx.restore();
+}
+
+/* ---------- loop ---------- */
+let last=performance.now();
+function loop(now){
+  const dt=Math.min(0.033,(now-last)/1000); last=now;
+  if(S.screen==='play' && !S.paused) update(dt);
+  if(S.screen!=='menu') draw(); else draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* ---------- input ---------- */
+function laneFromEvent(e){
+  const r=cv.getBoundingClientRect();
+  const x=(e.clientX-r.left)/r.width*W;
+  army.lane=x<W/2?0:1;
+}
+let down=false;
+cv.addEventListener('pointerdown',e=>{down=true; if(S.screen==='play')laneFromEvent(e); ac();});
+cv.addEventListener('pointermove',e=>{if(down&&S.screen==='play')laneFromEvent(e);});
+addEventListener('pointerup',()=>down=false);
+addEventListener('keydown',e=>{
+  if(e.key==='ArrowLeft'||e.key==='a'||e.key==='A') army.lane=0;
+  if(e.key==='ArrowRight'||e.key==='d'||e.key==='D') army.lane=1;
+  if(e.key==='p'||e.key==='P') togglePause();
+});
+function togglePause(){ if(S.screen!=='play')return; S.paused=!S.paused;
+  document.getElementById('pauseBtn').textContent=S.paused?'▶':'⏸'; }
+document.getElementById('pauseBtn').onclick=togglePause;
+document.getElementById('muteBtn').onclick=function(){ muted=!muted; this.textContent=muted?'🔇':'🔊'; };
+document.getElementById('startBtn').onclick=()=>{
+  ac(); document.getElementById('menu').classList.add('hidden'); newGame();
+};
+document.getElementById('retryBtn').onclick=()=>{
+  document.getElementById('over').classList.add('hidden'); newGame();
+};
+</script>
+</body>
+</html>
